@@ -1,0 +1,92 @@
+转载: http://www.dongcoder.com/detail-1133230.html
+1 描述
+　　使用Spring Cloud Zuul进行路由转发时候吗，文件上传会造成中文乱码“？”。
+1.1 解决
+　　Spring Cloud Zuul现在对于上传文件有两种处理方式，一种是用spring mvc，另一种是zuulServlet。spring mvc对文件处理不是很好，会导致乱码问题，zuulServlet则不会。
+　　网上比较常见的解决方案是在uri前加/zuul 使用zuul的servlet绕开springmvc来解决上传文件乱码问题
+　　如原文：https://my.oschina.net/kmnztech/blog/1618636
+　　比如：原来你上传文件的路径是/api/file/upload, 则你可以通过uri /zuul/api/file/upload来调用接口上传文件，中文编码问题解决。
+　　但是，在我项目中，在api路径前加个zuul总觉得变扭，于是尝试找到一种在改变最少就能解决问题的方法。
+　　通过阅读如官网说明。
+　　其实你可以通过zuul.servlet-path来配置使用zuul的servlet。接着，我在网关的application.properties中添加了：
+　　　　zuul.servlet-path=/
+1.2 解决
+　　对于已经固定了请求路径的来说，再次修改路径不是很好的，所以就采用如下方案：
+　　在过滤器中，有一个pre的过滤器 ServletDetectionFilter，他的执行顺序是-3，也是最先执行的过滤器，在这个过滤器中，有这么一段代码：
+
+public class ServletDetectionFilter extends ZuulFilter {
+    public ServletDetectionFilter() {
+    }
+
+    public String filterType() {
+        return "pre";
+    }
+
+    public int filterOrder() {
+        return -3;
+    }
+
+    public boolean shouldFilter() {
+        return true;
+    }
+
+    public Object run() {
+        RequestContext ctx = RequestContext.getCurrentContext();
+        HttpServletRequest request = ctx.getRequest();
+        if (!(request instanceof HttpServletRequestWrapper) && this.isDispatcherServletRequest(request)) {
+            ctx.set("isDispatcherServletRequest", true);
+        } else {
+            ctx.set("isDispatcherServletRequest", false);
+        }
+        return null;
+    }
+
+    private boolean isDispatcherServletRequest(HttpServletRequest request) {
+        return request.getAttribute(DispatcherServlet.WEB_APPLICATION_CONTEXT_ATTRIBUTE) != null;
+    }
+}
+　　在这个方法中，IS_DISPATCHER_SERVLET_REQUEST_KEY为false就会用ZuulServlet处理。如果没加/zuul前缀IS_DISPATCHER_SERVLET_REQUEST_KEY就会置为true，就会用spring mvc上传。会出现乱码问题。
+　　那么我们的一个解决方案是在在进入下一个过滤器之前我们就把我们的文件上传的请求用ZuulServlet处理，所以我们可以重写这个方法，根据contentType判断请求如果是multipart就将IS_DISPATCHER_SERVLET_REQUEST_KEY置为false，那么它就会用ZuulServlet处理。
+
+@Component
+public class ServletDetectionFilterFile extends ServletDetectionFilter {
+
+    @Override
+    public Object run() {
+        RequestContext ctx = RequestContext.getCurrentContext();
+        HttpServletRequest request = ctx.getRequest();
+        if (!(request instanceof HttpServletRequestWrapper)
+                && this.isDispatcherServletRequest(request)
+                && !this.isMultipartContent(request)) {
+            ctx.set("isDispatcherServletRequest", true);
+        } else {
+            ctx.set("isDispatcherServletRequest", false);
+        }
+
+        return null;
+    }
+
+    private boolean isDispatcherServletRequest(HttpServletRequest request) {
+        return request.getAttribute(DispatcherServlet.WEB_APPLICATION_CONTEXT_ATTRIBUTE) != null;
+    }
+
+    /**
+     * 判断是否是multipart/form-data请求
+     * @param request 请求
+     * @return 是否是
+     */
+    private boolean isMultipartContent(HttpServletRequest request) {
+        String requesType = "post";
+        if(!requesType.equals(request.getMethod().toLowerCase())) {
+            return false;
+        }
+        //获取Content-Type
+        String contentType = request.getContentType();
+        return (contentType != null) && (contentType.toLowerCase().startsWith("multipart/"));
+    }
+
+}
+　　到这里还没有结束，还有一个很坑的地方，在最后以前pre过滤器中，他会对url进行处理。如果该请求是ZuulServlet处理的，那么他会把url的前面几位用的zuulServletPath替代，zuulServletPath默认就是刚才我们替代的前缀 /zuul。那么如果你不处理的话，你的请求路径将会变化。所以在这里我们将这个默认的zuulServletPath改成空值，就不会替换啦。在配置文件里面加上：
+　　　　zuul.servletPath:
+
+　　后面的值不填。

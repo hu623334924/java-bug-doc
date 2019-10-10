@@ -1,0 +1,6 @@
+Bug列表
+1.Spring boot文件上传使用MultipartFile.getOriginalFileName()乱码问题。
+  在配置文件中增加 server.tomcat.uri-encoding=utf-8
+2.spring boot中获取文件名没有乱码，通过网关zuul乱码。
+  spring cloud zuul对于上传文件有两种处理方式，一种是使用spring MVC，另一种是zuulServlet。spring mvc对文件的上传处理不是很好，会导致乱码。
+  详见:spring cloud zuul中文文件上传乱码。
